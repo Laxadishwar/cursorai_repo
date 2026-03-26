@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:snowflake="http://www.mulesoft.org/schema/mule/snowflake"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd 
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd 
+        http://www.mulesoft.org/schema/mule/core       http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http       http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/snowflake  http://www.mulesoft.org/schema/mule/snowflake/current/mule-snowflake.xsd
+        http://www.mulesoft.org/schema/mule/ee/core    http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+  <!-- HTTP listener -->
+  <http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="53bf3bb8-120d-4fca-a4ea-581abfb426f8">
+    <http:listener-connection host="localhost" port="8087"/>
+  </http:listener-config>
+
+  <!-- Snowflake connection (move creds to secure properties later) -->
+  <snowflake:snowflake-config name="Snowflake_Config" doc:name="Snowflake Config" doc:id="cc07e3d4-966e-434b-a737-0f55d8495697">
+    <snowflake:snowflake-connection
+        accountName="KOUTRHR-NO96669"
+        warehouse="MULE_POC_WH"
+        database="MULE_POC_DB"
+        schema="POC_SCHEMA"
+        user="LAXADISHWAR"
+        password="Mulesoft@12345"
+        role="ACCOUNTADMIN"/>
+  </snowflake:snowflake-config>
+
+  <!-- /select -->
+  <flow name="snowflake-pocFlow" doc:id="3fe454d5-6c7d-4658-8b86-c29862df0183">
+    <http:listener doc:name="Listener" doc:id="ade1b562-e203-4601-91c6-f6e13fa4d8ac"
+                   config-ref="HTTP_Listener_config" path="/select"/>
+    <snowflake:select doc:name="Select" doc:id="fc373f43-5182-43b8-b0eb-45455cbefae7"
+                      config-ref="Snowflake_Config">
+      <snowflake:sql><![CDATA[
+select top 10 * from customers
+]]></snowflake:sql>
+    </snowflake:select>
+    <ee:transform doc:name="Transform Message" doc:id="90c4cd84-0862-4f2c-80a3-a4e6ee6c1ae1">
+      <ee:message>
+        <ee:set-payload><![CDATA[
+%dw 2.0
+output application/json
+---
+payload
+]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- /update (static example) -->
+  <flow name="snowflake-pocFlow1" doc:id="efa0927f-a10a-4de3-a8bc-386c8c1ac07d">
+    <http:listener doc:name="Listener" doc:id="f8ba5de9-4f8f-4243-934f-bf7a488732ec"
+                   config-ref="HTTP_Listener_config" path="/update"/>
+    <snowflake:update doc:name="Update" doc:id="6a3a02a4-97d9-46fd-a3de-29eb3e884def"
+                      config-ref="Snowflake_Config">
+      <snowflake:sql><![CDATA[
+UPDATE CUSTOMERS
+SET NAME = 'Laxa DL',
+    EMAIL = 'laxal77@example.com'
+WHERE ID = 1
+]]></snowflake:sql>
+    </snowflake:update>
+    <ee:transform doc:name="Transform Message" doc:id="71138654-0fba-419e-a7c7-1371beea2ecf">
+      <ee:message>
+        <ee:set-payload><![CDATA[
+%dw 2.0
+output application/json
+---
+payload
+]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- /insert  (insert ONLY IF NOT EXISTS) -->
+  <flow name="snowflake-pocFlow2" doc:id="c96211c8-d5c5-490a-8bbd-89b23a376060">
+    <http:listener doc:name="Listener" doc:id="53b59b9e-0b49-4056-93ef-2473b54a812a"
+                   config-ref="HTTP_Listener_config" path="/insert"/>
+
+    <!-- Build the exact param map required by named placeholders :id, :name, :email -->
+    <ee:transform doc:name="Build params" doc:id="897e96a7-95f1-4cc4-9174-900a7c993ad4">
+      <ee:message>
+        <ee:set-payload><![CDATA[
+%dw 2.0
+output application/java
+---
+{
+  id:    payload.id    as Number,
+  name:  payload.name  as String,
+  email: payload.email as String
+}
+]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+
+    <logger level="INFO" doc:name="Log params" message="Params going to Snowflake: #[payload]"/>
+
+    <snowflake:insert doc:name="Insert (IF NOT EXISTS)" doc:id="8cd49608-74b4-475a-a1ad-aa253a27e810"
+                      config-ref="Snowflake_Config">
+      <snowflake:sql><![CDATA[
+INSERT INTO POC_SCHEMA.CUSTOMERS (ID, NAME, EMAIL)
+SELECT :id, :name, :email
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM POC_SCHEMA.CUSTOMERS T
+  WHERE T.ID = :id
+)
+]]></snowflake:sql>
+
+      <!-- 🔴 This binds :id, :name, :email from the map produced above -->
+      <snowflake:input-parameters>#[payload]</snowflake:input-parameters>
+    </snowflake:insert>
+
+    <!-- Friendlier HTTP response -->
+    <ee:transform doc:name="Response (insert or skipped)">
+      <ee:message>
+        <ee:set-payload><![CDATA[
+%dw 2.0
+output application/json
+---
+if ((payload.affectedRows default 0) as Number == 1)
+  { status: "inserted", id: attributes.parameters.id default null }
+else
+  { status: "skipped_existing", id: attributes.parameters.id default null }
+]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+</mule>
